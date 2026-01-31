@@ -20,11 +20,12 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p output temp data/input data/mock assets
 
-# Default port
-ENV PORT=8000
+# Make start script executable
+COPY start.sh .
+RUN chmod +x start.sh
 
 # Expose port
 EXPOSE 8000
 
-# Run the API server with shell to expand $PORT
-CMD ["/bin/sh", "-c", "uvicorn api.server:app --host 0.0.0.0 --port $PORT"]
+# Run via start script
+CMD ["./start.sh"]
