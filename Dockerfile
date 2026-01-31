@@ -20,8 +20,8 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p output temp data/input data/mock assets
 
-# Expose port
-EXPOSE 8000
+# Expose port (Railway uses PORT env variable)
+EXPOSE ${PORT:-8000}
 
-# Run the API server
-CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the API server (use shell form for env variable expansion)
+CMD uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-8000}
