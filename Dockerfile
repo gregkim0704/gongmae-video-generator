@@ -20,12 +20,8 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p output temp data/input data/mock assets
 
-# Make start script executable
-COPY start.sh .
-RUN chmod +x start.sh
-
 # Expose port
 EXPOSE 8000
 
-# Run via start script
-CMD ["./start.sh"]
+# Run via Python start script (avoids shell line ending issues)
+CMD ["python", "start.py"]
