@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(del /f nul)",
+      "Bash(railway logs:*)",
+      "Bash(railway service:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: Add PDF upload with Edge TTS \\(free\\)\n\n- Add PDF appraisal document upload feature\n- Use Claude Vision API for text extraction from PDF images\n- Replace Naver TTS with Edge TTS \\(free, no API key required\\)\n- Add slideshow video generation from PDF pages\n- Update frontend with PDF upload UI and tabs\n- Add web frontend \\(Next.js\\) for Vercel deployment\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}

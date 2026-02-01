@@ -11,9 +11,11 @@ interface Job {
   progress: number;
   current_step: string | null;
   video_url: string | null;
+  script_url: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
+  script?: string;
 }
 
 interface Property {
@@ -33,7 +35,18 @@ const statusMap: Record<string, string> = {
   processing: "처리중",
   completed: "완료",
   failed: "실패",
+  script_ready: "스크립트 준비완료",
 };
+
+// 트랜지션 옵션
+const transitionOptions = [
+  { value: "fade", label: "페이드 (Fade)", desc: "부드러운 크로스페이드" },
+  { value: "slide", label: "슬라이드 (Slide)", desc: "왼쪽으로 슬라이드" },
+  { value: "zoom", label: "줌 (Zoom)", desc: "원형 확대 효과" },
+  { value: "dissolve", label: "디졸브 (Dissolve)", desc: "픽셀 단위 전환" },
+  { value: "wipe", label: "와이프 (Wipe)", desc: "오른쪽으로 닦아내기" },
+  { value: "none", label: "없음 (None)", desc: "즉시 전환 (컷)" },
+];
 
 export default function Home() {
   const [caseNumber, setCaseNumber] = useState("");
@@ -46,6 +59,9 @@ export default function Home() {
   const [showGuide, setShowGuide] = useState(false);
   const [activeTab, setActiveTab] = useState<"standard" | "pdf">("standard");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [editedScript, setEditedScript] = useState("");
+  const [selectedTransition, setSelectedTransition] = useState("fade");
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   // Format Korean price
   const formatPrice = (value: number): string => {
@@ -69,9 +85,28 @@ export default function Home() {
     loadProperties();
   }, [inputMode]);
 
-  // Poll job status when job is active
+  // Populate script editor when script is available
   useEffect(() => {
-    if (!currentJob || currentJob.status === "completed" || currentJob.status === "failed") {
+    if (currentJob?.script && !editedScript) {
+      setEditedScript(currentJob.script);
+    }
+  }, [currentJob?.script, editedScript]);
+
+  // Fetch script if status is script_ready but script is not in response
+  useEffect(() => {
+    if (currentJob?.status === "script_ready" && currentJob?.script_url && !currentJob?.script && !editedScript) {
+      fetch(`${API_URL}${currentJob.script_url}`)
+        .then(res => res.text())
+        .then(script => {
+          setEditedScript(script);
+        })
+        .catch(err => console.error("스크립트 로드 실패:", err));
+    }
+  }, [currentJob?.status, currentJob?.script_url, currentJob?.script, editedScript]);
+
+  // Poll job status when job is active (pending or processing)
+  useEffect(() => {
+    if (!currentJob || !["pending", "processing"].includes(currentJob.status)) {
       return;
     }
 
@@ -147,6 +182,80 @@ export default function Home() {
     } else {
       setError("PDF 파일만 업로드 가능합니다");
     }
+  };
+
+  const regenerateVideo = async () => {
+    if (!currentJob || !editedScript.trim()) {
+      setError("스크립트를 입력해주세요");
+      return;
+    }
+
+    setIsRegenerating(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_URL}/api/jobs/${currentJob.job_id}/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          script: editedScript,
+          transition: selectedTransition,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || `API 오류: ${res.status}`);
+      }
+
+      const job = await res.json();
+      setCurrentJob(job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "영상 재생성 실패");
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const downloadScript = () => {
+    if (!currentJob || !editedScript) return;
+
+    const blob = new Blob([editedScript], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${currentJob.job_id}_script.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleScriptFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Check file type
+    if (!file.name.endsWith('.txt') && file.type !== 'text/plain') {
+      setError("텍스트 파일(.txt)만 업로드 가능합니다");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      if (content) {
+        setEditedScript(content);
+        setError(null);
+      }
+    };
+    reader.onerror = () => {
+      setError("파일 읽기에 실패했습니다");
+    };
+    reader.readAsText(file, 'utf-8');
+
+    // Reset file input
+    e.target.value = '';
   };
 
   const submitPdfJob = async () => {
@@ -272,11 +381,19 @@ export default function Home() {
                 <h3 className="text-lg font-semibold text-pink-400 mb-2">
                   PDF 감정평가서 모드
                 </h3>
-                <p className="text-gray-300 text-sm leading-relaxed">
-                  <span className="text-purple-400 font-medium">PDF 감정평가서</span> 탭을 선택하면
-                  감정평가서 PDF 파일을 업로드할 수 있습니다. AI가 자동으로 내용을 분석하여
-                  나레이션 스크립트를 생성하고, 각 페이지를 슬라이드쇼 형식의 영상으로 만들어줍니다.
-                </p>
+                <div className="text-gray-300 text-sm leading-relaxed space-y-2">
+                  <p>
+                    <span className="text-purple-400 font-medium">PDF 감정평가서</span> 탭에서
+                    감정평가서 PDF를 업로드하면 AI가 내용을 분석합니다.
+                  </p>
+                  <p className="font-medium text-white">워크플로우:</p>
+                  <ol className="list-decimal ml-4 space-y-1">
+                    <li>PDF 업로드 → AI가 나레이션 스크립트 자동 생성</li>
+                    <li><span className="text-blue-400">스크립트 다운로드</span> → 외부 편집기에서 수정</li>
+                    <li><span className="text-blue-400">수정된 스크립트 업로드</span> (또는 직접 편집)</li>
+                    <li>화면 전환 효과 선택 → <span className="text-purple-400">영상 생성</span></li>
+                  </ol>
+                </div>
               </div>
 
               {/* Tips */}
@@ -491,6 +608,8 @@ export default function Home() {
                       ? "bg-red-900/50 text-red-300"
                       : currentJob.status === "processing"
                       ? "bg-blue-900/50 text-blue-300"
+                      : currentJob.status === "script_ready"
+                      ? "bg-purple-900/50 text-purple-300"
                       : "bg-gray-700 text-gray-300"
                   }`}
                 >
@@ -525,16 +644,127 @@ export default function Home() {
                 </div>
               )}
 
+              {/* Script Editor - shows when script is ready or completed */}
+              {(currentJob.status === "script_ready" || (currentJob.status === "completed" && editedScript)) && (
+                <div className="mt-6 space-y-4">
+                  <div className="bg-purple-900/30 border border-purple-700 rounded-lg p-4">
+                    <h3 className="text-purple-300 font-medium mb-2 flex items-center gap-2">
+                      <span>📝</span> 스크립트 편집
+                    </h3>
+                    <p className="text-gray-400 text-sm mb-2">
+                      AI가 생성한 나레이션 스크립트입니다. 아래에서 직접 편집하거나,
+                    </p>
+                    <p className="text-blue-400 text-sm mb-4">
+                      📥 다운로드 → 외부 편집 → 📤 업로드 방식으로 수정할 수 있습니다.
+                    </p>
+
+                    {/* Script Text Area */}
+                    <textarea
+                      value={editedScript}
+                      onChange={(e) => setEditedScript(e.target.value)}
+                      className="w-full h-64 px-4 py-3 rounded-lg bg-gray-900 border border-gray-600
+                               focus:border-purple-500 focus:ring-1 focus:ring-purple-500
+                               text-white font-mono text-sm resize-y"
+                      placeholder="스크립트가 여기에 표시됩니다..."
+                    />
+
+                    {/* Character Count */}
+                    <div className="text-right text-gray-500 text-sm mt-1">
+                      {editedScript.length.toLocaleString()} 자
+                    </div>
+                  </div>
+
+                  {/* Transition Selector */}
+                  <div className="bg-blue-900/30 border border-blue-700 rounded-lg p-4">
+                    <h3 className="text-blue-300 font-medium mb-2 flex items-center gap-2">
+                      <span>🎬</span> 화면 전환 효과
+                    </h3>
+                    <p className="text-gray-400 text-sm mb-4">
+                      슬라이드 간 전환 애니메이션을 선택하세요.
+                    </p>
+
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {transitionOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          onClick={() => setSelectedTransition(option.value)}
+                          className={`p-3 rounded-lg border text-left transition-all ${
+                            selectedTransition === option.value
+                              ? "bg-blue-600 border-blue-500 text-white"
+                              : "bg-gray-700/50 border-gray-600 text-gray-300 hover:bg-gray-700"
+                          }`}
+                        >
+                          <div className="font-medium text-sm">{option.label}</div>
+                          <div className="text-xs opacity-70 mt-1">{option.desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="space-y-3">
+                    {/* Download & Upload Script Buttons */}
+                    <div className="flex gap-3">
+                      <button
+                        onClick={downloadScript}
+                        className="flex-1 py-3 px-6 rounded-lg bg-gray-600 hover:bg-gray-500
+                                 font-semibold transition-colors flex items-center justify-center gap-2"
+                      >
+                        <span>📥</span> 스크립트 다운로드
+                      </button>
+                      <label
+                        className="flex-1 py-3 px-6 rounded-lg bg-blue-600 hover:bg-blue-700
+                                 font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <span>📤</span> 수정된 스크립트 업로드
+                        <input
+                          type="file"
+                          accept=".txt,text/plain"
+                          onChange={handleScriptFileUpload}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+
+                    {/* Generate Video Button */}
+                    <button
+                      onClick={regenerateVideo}
+                      disabled={isRegenerating || !editedScript.trim()}
+                      className="w-full py-4 px-6 rounded-lg bg-purple-600 hover:bg-purple-700
+                               disabled:bg-gray-600 disabled:cursor-not-allowed
+                               font-semibold transition-colors flex items-center justify-center gap-2 text-lg"
+                    >
+                      {isRegenerating ? (
+                        <>처리 중...</>
+                      ) : (
+                        <>
+                          <span>🎥</span> 영상 생성하기
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {currentJob.video_url && (
-                <div className="mt-4">
+                <div className="mt-4 flex gap-3">
                   <a
                     href={`${API_URL}${currentJob.video_url}`}
                     download
-                    className="inline-block px-6 py-3 rounded-lg bg-green-600 hover:bg-green-700
+                    className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-green-600 hover:bg-green-700
                              font-semibold transition-colors"
                   >
-                    영상 다운로드
+                    <span>🎬</span> 영상 다운로드
                   </a>
+                  {editedScript && (
+                    <button
+                      onClick={downloadScript}
+                      className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-gray-600 hover:bg-gray-500
+                               font-semibold transition-colors"
+                    >
+                      <span>📄</span> 스크립트 다운로드
+                    </button>
+                  )}
                 </div>
               )}
             </div>
