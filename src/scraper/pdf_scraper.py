@@ -154,10 +154,13 @@ class PdfAppraisalScraper(BaseScraper):
 
     async def generate_summary(self) -> str:
         """
-        Generate a combined summary from all extracted texts.
+        Generate a page-synchronized narration script.
+
+        Each page's narration is marked with [페이지 N] so the video
+        can sync the audio with the corresponding page image.
 
         Returns:
-            Combined summary text
+            Combined summary text with page markers
         """
         if not self.extracted_texts:
             raise ValueError("No extracted texts available. Call extract_text_from_images() first.")
@@ -165,6 +168,7 @@ class PdfAppraisalScraper(BaseScraper):
         import anthropic
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
+        num_pages = len(self.extracted_texts)
         combined_text = "\n\n---\n\n".join([
             f"[페이지 {i+1}]\n{text}"
             for i, text in enumerate(self.extracted_texts)
@@ -173,7 +177,7 @@ class PdfAppraisalScraper(BaseScraper):
         response = await asyncio.to_thread(
             client.messages.create,
             model="claude-sonnet-4-20250514",
-            max_tokens=3000,
+            max_tokens=4000,
             messages=[{
                 "role": "user",
                 "content": f"""다음은 감정평가서의 각 페이지에서 추출한 내용입니다.
@@ -184,17 +188,25 @@ class PdfAppraisalScraper(BaseScraper):
 - 섹션 제목도 자연스러운 문장으로 연결하세요
 - 기호나 특수문자 없이 순수 텍스트만 사용하세요
 
-대본 구성:
-1. 도입부 (물건 소개)
-2. 물건 개요 (위치, 종류, 면적)
-3. 가격 정보 (감정가, 최저가)
-4. 위치 분석 (주변 환경, 교통)
-5. 물건 상세 (건물 상태, 특징)
-6. 주의사항 (권리관계, 유의점)
-7. 마무리
+매우 중요 - 페이지별 동기화:
+이 영상은 PDF의 각 페이지를 슬라이드로 보여주면서 나레이션이 재생됩니다.
+따라서 각 페이지에 해당하는 나레이션을 [페이지 N] 마커로 구분해서 작성해주세요.
 
-각 섹션은 자연스럽게 연결되도록 작성해주세요.
-말하기 편한 구어체로 작성하고, 읽기 쉽게 문단을 나눠주세요.
+총 {num_pages}페이지입니다. 다음 형식으로 작성해주세요:
+
+[페이지 1]
+(첫 번째 페이지가 화면에 보일 때 읽을 나레이션)
+
+[페이지 2]
+(두 번째 페이지가 화면에 보일 때 읽을 나레이션)
+
+... (모든 페이지에 대해 작성)
+
+각 페이지의 나레이션은:
+- 해당 페이지에 있는 정보를 기반으로 작성
+- 자연스러운 구어체로 작성
+- 페이지당 2-4문장 정도로 적절한 길이 유지
+- 전체 흐름이 자연스럽게 연결되도록 작성
 
 ---
 추출된 내용:
@@ -204,6 +216,44 @@ class PdfAppraisalScraper(BaseScraper):
 
         self.combined_summary = response.content[0].text
         return self.combined_summary
+
+    def get_page_scripts(self) -> List[str]:
+        """
+        Parse the combined summary and return per-page scripts.
+
+        Returns:
+            List of scripts, one per page
+        """
+        if not self.combined_summary:
+            return []
+
+        import re
+
+        # Split by [페이지 N] markers
+        pattern = r'\[페이지\s*(\d+)\]'
+        parts = re.split(pattern, self.combined_summary)
+
+        # parts will be: ['intro text', '1', 'page 1 content', '2', 'page 2 content', ...]
+        page_scripts = []
+        num_pages = len(self.page_images)
+
+        for i in range(num_pages):
+            page_num = str(i + 1)
+            script = ""
+
+            # Find the content for this page number
+            for j in range(len(parts) - 1):
+                if parts[j].strip() == page_num:
+                    script = parts[j + 1].strip()
+                    break
+
+            # If no script found for this page, use a default
+            if not script:
+                script = f"페이지 {i + 1}의 내용입니다."
+
+            page_scripts.append(script)
+
+        return page_scripts
 
     async def get_property(self, case_number: str) -> Optional[AuctionProperty]:
         """

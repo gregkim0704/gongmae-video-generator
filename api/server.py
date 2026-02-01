@@ -375,11 +375,52 @@ async def generate_pdf_script_task(job_id: str, pdf_path: str):
         jobs[job_id]["updated_at"] = datetime.now().isoformat()
 
 
+def parse_page_scripts(script: str, num_pages: int) -> list:
+    """
+    Parse script with [페이지 N] markers into per-page scripts.
+
+    Args:
+        script: Full script with page markers
+        num_pages: Number of pages/images
+
+    Returns:
+        List of scripts, one per page
+    """
+    import re
+
+    # Split by [페이지 N] markers
+    pattern = r'\[페이지\s*(\d+)\]'
+    parts = re.split(pattern, script)
+
+    # parts will be: ['intro text', '1', 'page 1 content', '2', 'page 2 content', ...]
+    page_scripts = []
+
+    for i in range(num_pages):
+        page_num = str(i + 1)
+        page_script = ""
+
+        # Find the content for this page number
+        for j in range(len(parts) - 1):
+            if parts[j].strip() == page_num:
+                page_script = parts[j + 1].strip()
+                break
+
+        # If no script found for this page, use default
+        if not page_script:
+            page_script = f"페이지 {i + 1}의 내용입니다."
+
+        page_scripts.append(page_script)
+
+    return page_scripts
+
+
 async def generate_video_from_script_task(job_id: str, script: str, transition: str = "fade"):
     """Background task to generate video from script (Phase 2)"""
     from src.video import VideoComposer
     from src.audio import TTSGenerator
     from src.models import Scene, ScriptSection
+    from pydub import AudioSegment
+    import os
 
     try:
         jobs[job_id]["status"] = "processing"
@@ -396,36 +437,67 @@ async def generate_video_from_script_task(job_id: str, script: str, transition: 
         if not image_paths:
             raise ValueError("이미지 경로를 찾을 수 없습니다")
 
-        # Step 1: Generate TTS audio with edited script
-        update_progress(20, "음성 생성 중 (Edge TTS)...")
-        tts = TTSGenerator(mock_mode=False)  # Use real TTS
-        audio_filename = f"{job_id}_narration.mp3"
-        audio_path = await tts.generate_speech(
-            script,
-            output_filename=audio_filename
-        )
+        num_pages = len(image_paths)
+        tts = TTSGenerator(mock_mode=False)
 
-        # Get audio duration
-        update_progress(40, "오디오 분석 중...")
-        audio_duration = await tts.get_audio_duration(audio_path)
+        # Step 1: Parse script into per-page segments
+        update_progress(10, "스크립트 분석 중...")
+        page_scripts = parse_page_scripts(script, num_pages)
 
-        # Step 2: Create scenes (distribute duration across pages)
-        update_progress(60, "영상 장면 구성 중...")
-        num_images = len(image_paths)
-        duration_per_image = audio_duration / num_images if num_images > 0 else 5.0
+        print(f"Parsed {len(page_scripts)} page scripts from {num_pages} pages")
+        for i, ps in enumerate(page_scripts):
+            print(f"  Page {i+1}: {ps[:50]}...")
 
+        # Step 2: Generate TTS audio for each page
+        update_progress(20, f"페이지별 음성 생성 중 (0/{num_pages})...")
+        page_audio_paths = []
+        page_durations = []
+
+        for i, page_script in enumerate(page_scripts):
+            update_progress(
+                20 + int(40 * (i / num_pages)),
+                f"페이지별 음성 생성 중 ({i+1}/{num_pages})..."
+            )
+
+            audio_filename = f"{job_id}_page_{i+1}.mp3"
+            audio_path = await tts.generate_speech(
+                page_script,
+                output_filename=audio_filename
+            )
+            page_audio_paths.append(audio_path)
+
+            # Get duration of this page's audio
+            duration = await tts.get_audio_duration(audio_path)
+            page_durations.append(duration)
+            print(f"  Page {i+1} audio: {duration:.2f}s")
+
+        # Step 3: Concatenate all page audios into one file
+        update_progress(60, "오디오 병합 중...")
+        combined_audio = AudioSegment.empty()
+        for audio_path in page_audio_paths:
+            segment = AudioSegment.from_mp3(audio_path)
+            combined_audio += segment
+
+        combined_audio_path = settings.temp_dir / f"{job_id}_narration.mp3"
+        combined_audio.export(str(combined_audio_path), format="mp3")
+        print(f"Combined audio duration: {len(combined_audio)/1000:.2f}s")
+
+        # Step 4: Create scenes with accurate per-page durations
+        update_progress(70, "영상 장면 구성 중...")
         scenes = []
-        for i, img_path in enumerate(image_paths):
+        for i, (img_path, duration) in enumerate(zip(image_paths, page_durations)):
             scene = Scene(
                 scene_id=i,
                 section=ScriptSection.INTRO,
-                text=f"페이지 {i+1}",
-                duration=duration_per_image,
+                text=page_scripts[i][:50] if i < len(page_scripts) else f"페이지 {i+1}",
+                duration=duration,
                 image_path=str(img_path)
             )
             scenes.append(scene)
 
-        # Step 3: Compose video with selected transition
+        print(f"Created {len(scenes)} scenes with durations: {[f'{d:.1f}s' for d in page_durations]}")
+
+        # Step 5: Compose video with selected transition
         update_progress(80, f"슬라이드쇼 영상 생성 중 ({transition} 효과)...")
         composer = VideoComposer()
 
@@ -434,13 +506,20 @@ async def generate_video_from_script_task(job_id: str, script: str, transition: 
 
         video_path = await composer.compose_video(
             scenes=scenes,
-            audio_path=audio_path,
+            audio_path=str(combined_audio_path),
             output_filename=output_filename,
             apply_effects=False,
             transition_type=transition
         )
 
-        # Step 4: Complete
+        # Cleanup temporary page audio files
+        for audio_path in page_audio_paths:
+            try:
+                os.remove(audio_path)
+            except Exception:
+                pass
+
+        # Step 6: Complete
         update_progress(100, "영상 생성 완료!")
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["progress"] = 100
@@ -448,6 +527,7 @@ async def generate_video_from_script_task(job_id: str, script: str, transition: 
         jobs[job_id]["video_url"] = f"/api/videos/{Path(video_path).name}"
         jobs[job_id]["final_script"] = script
         jobs[job_id]["transition"] = transition
+        jobs[job_id]["page_durations"] = page_durations
         jobs[job_id]["updated_at"] = datetime.now().isoformat()
 
     except Exception as e:
