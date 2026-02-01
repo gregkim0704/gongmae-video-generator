@@ -158,10 +158,12 @@ class VideoGenerationPipeline:
                 safe_case = case_number.replace("/", "_").replace("\\", "_")
                 output_filename = f"{safe_case}_{timestamp}.mp4"
 
+            # 테스트 모드에서는 zoompan 효과 비활성화 (빠른 생성)
             video_path = await self.video_composer.compose_video(
                 scenes=scenes,
                 audio_path=audio_path,
-                output_filename=output_filename
+                output_filename=output_filename,
+                apply_effects=not self.mock_mode  # 프로덕션에서만 효과 적용
             )
             self.current_job.video_path = video_path
 

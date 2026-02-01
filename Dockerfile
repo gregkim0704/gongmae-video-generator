@@ -1,10 +1,11 @@
 # Dockerfile for Railway deployment
 FROM python:3.12-slim
 
-# Install FFmpeg and other dependencies
+# Install FFmpeg, Poppler (for PDF), and other dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     fonts-nanum \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

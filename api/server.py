@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.pipeline import VideoGenerationPipeline
-from src.scraper import create_template_file
+from src.scraper import create_template_file, PdfAppraisalScraper
 from src.config import settings
 
 
@@ -47,12 +47,19 @@ app = FastAPI(
 )
 
 # CORS configuration for Vercel frontend
+import os
+FRONTEND_URL = os.getenv("FRONTEND_URL", "")
+allowed_origins = [
+    "http://localhost:3000",
+]
+# Add Vercel URLs (supports pattern matching)
+if FRONTEND_URL:
+    allowed_origins.append(FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://*.vercel.app",
-    ],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Vercel preview/production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -296,6 +303,153 @@ async def get_template():
         "auction_round": 1,
         "risk_level": "caution"
     }
+
+
+# PDF Upload and Video Generation
+async def generate_pdf_video_task(job_id: str, pdf_path: str):
+    """Background task to generate video from PDF appraisal"""
+    from src.video import VideoComposer
+    from src.audio import TTSGenerator
+    from src.models import Scene, ScriptSection
+
+    try:
+        jobs[job_id]["status"] = "processing"
+        jobs[job_id]["updated_at"] = datetime.now().isoformat()
+
+        def update_progress(progress: int, step: str):
+            jobs[job_id]["progress"] = progress
+            jobs[job_id]["current_step"] = step
+            jobs[job_id]["updated_at"] = datetime.now().isoformat()
+            print(f"[{progress}%] {step}")
+
+        # Step 1: Initialize PDF scraper
+        update_progress(5, "PDF 파일 처리 중...")
+        scraper = PdfAppraisalScraper()
+        scraper.set_pdf(pdf_path)
+
+        # Step 2: Convert PDF to images
+        update_progress(15, "PDF를 이미지로 변환 중...")
+        images_dir = settings.temp_dir / "pdf_images" / job_id
+        image_paths = await scraper.convert_pdf_to_images(images_dir)
+
+        if not image_paths:
+            raise ValueError("PDF에서 이미지를 추출할 수 없습니다")
+
+        # Step 3: Extract text from images using Claude Vision
+        update_progress(30, "이미지에서 텍스트 추출 중...")
+        await scraper.extract_text_from_images()
+
+        # Step 4: Generate narration script
+        update_progress(50, "나레이션 스크립트 생성 중...")
+        narration_script = await scraper.generate_summary()
+
+        print(f"\n--- Generated Script ---\n{narration_script[:500]}...\n")
+
+        # Step 5: Generate TTS audio
+        update_progress(65, "음성 생성 중...")
+        tts = TTSGenerator(mock_mode=False)  # Use real TTS
+        audio_filename = f"{job_id}_narration.mp3"
+        audio_path = await tts.generate_speech(
+            narration_script,
+            output_filename=audio_filename
+        )
+
+        # Get audio duration
+        audio_duration = await tts.get_audio_duration(audio_path)
+
+        # Step 6: Create scenes (distribute duration across pages)
+        update_progress(75, "영상 장면 구성 중...")
+        num_images = len(image_paths)
+        duration_per_image = audio_duration / num_images if num_images > 0 else 5.0
+
+        scenes = []
+        for i, img_path in enumerate(image_paths):
+            scene = Scene(
+                scene_id=i,
+                section=ScriptSection.INTRO,  # Placeholder
+                text=f"페이지 {i+1}",
+                duration=duration_per_image,
+                image_path=str(img_path)
+            )
+            scenes.append(scene)
+
+        # Step 7: Compose video (slideshow mode - no zoompan)
+        update_progress(85, "슬라이드쇼 영상 생성 중...")
+        composer = VideoComposer()
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"pdf_appraisal_{timestamp}.mp4"
+
+        video_path = await composer.compose_video(
+            scenes=scenes,
+            audio_path=audio_path,
+            output_filename=output_filename,
+            apply_effects=False  # Slideshow mode - no zoompan
+        )
+
+        # Step 8: Complete
+        update_progress(100, "영상 생성 완료!")
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["progress"] = 100
+        jobs[job_id]["video_path"] = video_path
+        jobs[job_id]["video_url"] = f"/api/videos/{Path(video_path).name}"
+        jobs[job_id]["updated_at"] = datetime.now().isoformat()
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["error"] = str(e)
+        jobs[job_id]["updated_at"] = datetime.now().isoformat()
+
+
+@app.post("/api/upload-pdf", response_model=JobStatusResponse)
+async def upload_pdf(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Upload PDF appraisal document and generate video.
+
+    The PDF pages will be converted to images, text will be extracted
+    using Claude Vision API, and a slideshow video will be generated
+    with TTS narration.
+    """
+    # Validate file type
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="PDF 파일만 업로드 가능합니다")
+
+    # Create job
+    job_id = str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+
+    # Save uploaded PDF
+    pdf_dir = settings.temp_dir / "uploads"
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = pdf_dir / f"{job_id}_{file.filename}"
+
+    with open(pdf_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    # Initialize job
+    jobs[job_id] = {
+        "job_id": job_id,
+        "status": "pending",
+        "progress": 0,
+        "current_step": "PDF 업로드 완료, 처리 시작...",
+        "video_url": None,
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+        "pdf_path": str(pdf_path),
+        "input_mode": "pdf"
+    }
+
+    # Start background task
+    background_tasks.add_task(generate_pdf_video_task, job_id, str(pdf_path))
+
+    return JobStatusResponse(**jobs[job_id])
 
 
 if __name__ == "__main__":

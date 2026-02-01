@@ -13,8 +13,14 @@ from src.utils.cache import get_cache_key, get_cached_file, cache_file
 class TTSGenerator:
     """
     Handles text-to-speech generation with caching.
-    Currently uses mock mode, with future support for Naver Clova TTS.
+    Uses Edge TTS (Microsoft) - FREE, no API key required.
     """
+
+    # Korean voices available in Edge TTS
+    KOREAN_VOICES = {
+        "female": "ko-KR-SunHiNeural",  # 여성 (기본)
+        "male": "ko-KR-InJoonNeural",   # 남성
+    }
 
     def __init__(self, mock_mode: bool = True):
         self.mock_mode = mock_mode
@@ -68,8 +74,8 @@ class TTSGenerator:
                     text, output_filename
                 )
             else:
-                # Use real TTS (Naver Clova - to be implemented)
-                audio_path = await self._generate_naver_tts(
+                # Use Edge TTS (FREE - Microsoft)
+                audio_path = await self._generate_edge_tts(
                     text, language, voice_config, output_filename
                 )
 
@@ -83,7 +89,7 @@ class TTSGenerator:
         except Exception as e:
             raise Exception(f"TTS generation failed: {str(e)}")
 
-    async def _generate_naver_tts(
+    async def _generate_edge_tts(
         self,
         text: str,
         language: str,
@@ -91,17 +97,106 @@ class TTSGenerator:
         output_filename: str
     ) -> str:
         """
-        Generate audio using Naver Clova TTS API.
-        To be implemented when API access is available.
+        Generate audio using Edge TTS (Microsoft).
+        FREE - No API key required!
+        https://github.com/rany2/edge-tts
         """
-        # Placeholder for Naver Clova TTS implementation
-        # Would use settings.naver_client_id and settings.naver_client_secret
+        import edge_tts
 
-        # For now, fall back to mock
-        print("Naver TTS not configured, using mock audio")
-        from .mock_tts import MockTTSGenerator
-        mock_tts = MockTTSGenerator()
-        return await mock_tts.generate_speech(text, output_filename)
+        # Select voice
+        gender = voice_config.get("gender", "female") if voice_config else "female"
+        voice = self.KOREAN_VOICES.get(gender, self.KOREAN_VOICES["female"])
+
+        # Speed/rate adjustment (e.g., "+10%", "-20%")
+        rate = voice_config.get("rate", "+0%") if voice_config else "+0%"
+        if isinstance(rate, (int, float)):
+            rate = f"+{int(rate)}%" if rate >= 0 else f"{int(rate)}%"
+
+        # Volume adjustment
+        volume = voice_config.get("volume", "+0%") if voice_config else "+0%"
+        if isinstance(volume, (int, float)):
+            volume = f"+{int(volume)}%" if volume >= 0 else f"{int(volume)}%"
+
+        output_path = settings.temp_dir / output_filename
+
+        print(f"Edge TTS 생성 중... (음성: {voice})")
+
+        try:
+            # Create communicate object
+            communicate = edge_tts.Communicate(
+                text=text,
+                voice=voice,
+                rate=rate,
+                volume=volume
+            )
+
+            # Generate audio
+            await communicate.save(str(output_path))
+
+            print(f"TTS 생성 완료: {output_path}")
+            return str(output_path)
+
+        except Exception as e:
+            print(f"Edge TTS 오류: {e}")
+            # Fallback to mock
+            print("mock 오디오로 대체합니다...")
+            from .mock_tts import MockTTSGenerator
+            mock_tts = MockTTSGenerator()
+            return await mock_tts.generate_speech(text, output_filename)
+
+    def _split_text(self, text: str, max_chars: int) -> list:
+        """Split text into chunks, preferring sentence boundaries"""
+        if len(text) <= max_chars:
+            return [text]
+
+        chunks = []
+        current_chunk = ""
+
+        # Split by sentences
+        import re
+        sentences = re.split(r'(?<=[.!?。])\s*', text)
+
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) <= max_chars:
+                current_chunk += sentence + " "
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                # Handle very long sentences
+                if len(sentence) > max_chars:
+                    # Split by commas or spaces
+                    words = sentence.split()
+                    current_chunk = ""
+                    for word in words:
+                        if len(current_chunk) + len(word) + 1 <= max_chars:
+                            current_chunk += word + " "
+                        else:
+                            if current_chunk:
+                                chunks.append(current_chunk.strip())
+                            current_chunk = word + " "
+                else:
+                    current_chunk = sentence + " "
+
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+
+        return chunks
+
+    async def _concatenate_audio(self, audio_files: list, output_path: Path):
+        """Concatenate multiple audio files into one"""
+        from pydub import AudioSegment
+
+        combined = AudioSegment.empty()
+        for audio_file in audio_files:
+            segment = AudioSegment.from_mp3(str(audio_file))
+            combined += segment
+
+        await asyncio.to_thread(
+            combined.export,
+            str(output_path),
+            format="mp3",
+            bitrate="192k"
+        )
 
     async def get_audio_duration(self, audio_path: str) -> float:
         """Get duration of audio file in seconds"""
