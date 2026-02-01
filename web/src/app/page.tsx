@@ -648,14 +648,19 @@ export default function Home() {
               {(currentJob.status === "script_ready" || (currentJob.status === "completed" && editedScript)) && (
                 <div className="mt-6 space-y-4">
                   <div className="bg-purple-900/30 border border-purple-700 rounded-lg p-4">
-                    <h3 className="text-purple-300 font-medium mb-2 flex items-center gap-2">
-                      <span>📝</span> 스크립트 편집
-                    </h3>
-                    <p className="text-gray-400 text-sm mb-2">
-                      AI가 생성한 나레이션 스크립트입니다. 아래에서 직접 편집하거나,
-                    </p>
-                    <p className="text-blue-400 text-sm mb-4">
-                      📥 다운로드 → 외부 편집 → 📤 업로드 방식으로 수정할 수 있습니다.
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-purple-300 font-medium flex items-center gap-2">
+                        <span>📝</span> 나레이션 스크립트
+                      </h3>
+                      {currentJob.script && editedScript !== currentJob.script && (
+                        <span className="px-2 py-1 bg-yellow-600/30 text-yellow-300 text-xs rounded-full">
+                          수정됨
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="text-green-400 text-sm mb-3 flex items-center gap-2">
+                      <span>✏️</span> 아래에서 직접 수정한 후 "영상 생성하기" 버튼을 눌러주세요
                     </p>
 
                     {/* Script Text Area */}
@@ -668,9 +673,33 @@ export default function Home() {
                       placeholder="스크립트가 여기에 표시됩니다..."
                     />
 
-                    {/* Character Count */}
-                    <div className="text-right text-gray-500 text-sm mt-1">
-                      {editedScript.length.toLocaleString()} 자
+                    {/* Character Count & Status */}
+                    <div className="flex justify-between items-center mt-2">
+                      <span className="text-gray-500 text-sm">
+                        {editedScript.length.toLocaleString()} 자
+                      </span>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={downloadScript}
+                          className="text-gray-400 hover:text-white text-sm flex items-center gap-1 transition-colors"
+                          title="스크립트 다운로드"
+                        >
+                          <span>📥</span> 다운로드
+                        </button>
+                        <span className="text-gray-600">|</span>
+                        <label
+                          className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-1 cursor-pointer transition-colors"
+                          title="텍스트 파일 업로드"
+                        >
+                          <span>📤</span> 파일 업로드
+                          <input
+                            type="file"
+                            accept=".txt,text/plain"
+                            onChange={handleScriptFileUpload}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
                     </div>
                   </div>
 
@@ -701,48 +730,25 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Action Buttons */}
-                  <div className="space-y-3">
-                    {/* Download & Upload Script Buttons */}
-                    <div className="flex gap-3">
-                      <button
-                        onClick={downloadScript}
-                        className="flex-1 py-3 px-6 rounded-lg bg-gray-600 hover:bg-gray-500
-                                 font-semibold transition-colors flex items-center justify-center gap-2"
-                      >
-                        <span>📥</span> 스크립트 다운로드
-                      </button>
-                      <label
-                        className="flex-1 py-3 px-6 rounded-lg bg-blue-600 hover:bg-blue-700
-                                 font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                      >
-                        <span>📤</span> 수정된 스크립트 업로드
-                        <input
-                          type="file"
-                          accept=".txt,text/plain"
-                          onChange={handleScriptFileUpload}
-                          className="hidden"
-                        />
-                      </label>
-                    </div>
-
-                    {/* Generate Video Button */}
-                    <button
-                      onClick={regenerateVideo}
-                      disabled={isRegenerating || !editedScript.trim()}
-                      className="w-full py-4 px-6 rounded-lg bg-purple-600 hover:bg-purple-700
-                               disabled:bg-gray-600 disabled:cursor-not-allowed
-                               font-semibold transition-colors flex items-center justify-center gap-2 text-lg"
-                    >
-                      {isRegenerating ? (
-                        <>처리 중...</>
-                      ) : (
-                        <>
-                          <span>🎥</span> 영상 생성하기
-                        </>
-                      )}
-                    </button>
-                  </div>
+                  {/* Generate Video Button */}
+                  <button
+                    onClick={regenerateVideo}
+                    disabled={isRegenerating || !editedScript.trim()}
+                    className="w-full py-4 px-6 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600
+                             hover:from-purple-700 hover:to-pink-700
+                             disabled:from-gray-600 disabled:to-gray-600 disabled:cursor-not-allowed
+                             font-semibold transition-all flex items-center justify-center gap-2 text-lg shadow-lg"
+                  >
+                    {isRegenerating ? (
+                      <>
+                        <span className="animate-spin">⏳</span> 영상 생성 중...
+                      </>
+                    ) : (
+                      <>
+                        <span>🎥</span> 영상 생성하기
+                      </>
+                    )}
+                  </button>
                 </div>
               )}
 
